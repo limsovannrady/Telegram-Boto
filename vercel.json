@@ -1,4 +1,5 @@
 {
+  "framework": null,
   "routes": [
     { "src": "/api/webhook", "dest": "/api/webhook.py" },
     { "src": "/api/sms", "dest": "/api/sms.py" }
