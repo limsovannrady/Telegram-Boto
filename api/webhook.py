@@ -35,9 +35,14 @@ def get_balance():
 
 def handle_command(message):
     chat_id = message["chat"]["id"]
+    user_id = message.get("from", {}).get("id", 0)
     text = message.get("text", "")
     user = message.get("from", {})
     name = user.get("first_name", "User")
+
+    if user_id != ADMIN_ID:
+        tg_send(chat_id, "⛔ Access denied.")
+        return
 
     if text.startswith("/start"):
         balance = get_balance()

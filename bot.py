@@ -33,7 +33,14 @@ def get_account_info():
         return None
 
 
+def is_admin(update: Update) -> bool:
+    return update.effective_user.id == ADMIN_ID
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Access denied.")
+        return
     await context.bot.send_chat_action(update.effective_chat.id, constants.ChatAction.TYPING)
     balance = get_account_info()
     domain = os.environ.get("REPLIT_DEV_DOMAIN", "your-repl.replit.dev")
@@ -62,6 +69,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Access denied.")
+        return
     await context.bot.send_chat_action(update.effective_chat.id, constants.ChatAction.TYPING)
     balance = get_account_info()
     if balance is not None:
