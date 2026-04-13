@@ -46,19 +46,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Balance: *${balance}*\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"📡 Webhook URL:\n`{webhook_url}`\n\n"
-            f"_Set this URL in your sms\\-x\\.org settings to receive SMS here\\._"
+            f"Set this URL in sms-x.org settings."
         )
     else:
         msg = (
             f"👤 *Account Info*\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"🔑 API Key: `{API_KEY}`\n"
-            f"⚠️ Could not fetch balance\\.\n"
+            f"⚠️ Could not fetch balance.\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"📡 Webhook URL:\n`{webhook_url}`\n\n"
-            f"_Set this URL in your sms\\-x\\.org settings to receive SMS here\\._"
+            f"Set this URL in sms-x.org settings."
         )
-    await update.message.reply_text(msg, parse_mode="MarkdownV2")
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

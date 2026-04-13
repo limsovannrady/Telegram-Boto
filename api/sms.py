@@ -10,69 +10,73 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "5002402843"))
 TG_API = f"https://api.telegram.org/bot{TOKEN}"
 
 
-def tg_send(chat_id, text, parse_mode="Markdown"):
-    requests.post(f"{TG_API}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": parse_mode
-    }, timeout=10)
+def tg_send(chat_id, text):
+    try:
+        requests.post(f"{TG_API}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown"
+        }, timeout=10)
+    except Exception as e:
+        print(f"Telegram error: {e}")
 
 
-def build_sms_message(data: dict) -> str:
-    phone = data.get("phone", data.get("number", [""]))[0] if isinstance(data.get("phone", data.get("number")), list) else data.get("phone", data.get("number", ""))
-    code = data.get("code", data.get("sms", data.get("text", [""]))[0] if isinstance(data.get("code", data.get("sms", data.get("text"))), list) else data.get("code", data.get("sms", data.get("text", ""))))
-    service = (data.get("service", [""])[0] if isinstance(data.get("service"), list) else data.get("service", ""))
-    order_id = (data.get("id", data.get("order_id", [""]))[0] if isinstance(data.get("id", data.get("order_id")), list) else data.get("id", data.get("order_id", "")))
+def flat_params(raw: dict) -> dict:
+    return {k: (v[0] if isinstance(v, list) and v else v) for k, v in raw.items()}
+
+
+def build_message(data: dict) -> str:
+    phone    = data.get("phone") or data.get("number") or ""
+    code     = data.get("code") or data.get("sms") or data.get("text") or ""
+    service  = data.get("service") or ""
+    order_id = data.get("id") or data.get("order_id") or ""
 
     msg = "📩 *SMS Received*\n━━━━━━━━━━━━━━━━\n"
     if service:
-        msg += f"🛍️ Service: *{service}*\n"
+        msg += f"🛍 Service: *{service}*\n"
     if order_id:
         msg += f"🆔 Order ID: `{order_id}`\n"
     if phone:
         msg += f"📞 Phone: `{phone}`\n"
     if code:
-        msg += f"🔐 Code / SMS: *{code}*\n"
+        msg += f"🔐 Code: *{code}*\n"
     msg += "━━━━━━━━━━━━━━━━"
 
     if not phone and not code:
-        clean = {k: (v[0] if isinstance(v, list) else v) for k, v in data.items()}
-        msg += f"\n📦 Raw: `{json.dumps(clean)}`"
+        msg += f"\n📦 Raw: `{json.dumps(data)}`"
 
     return msg
 
 
 class handler(BaseHTTPRequestHandler):
+
     def do_GET(self):
         parsed = urlparse(self.path)
-        params = parse_qs(parsed.query)
-        msg = build_sms_message(params)
+        params = flat_params(parse_qs(parsed.query))
+        print(f"[SMS GET] {params}")
+        msg = build_message(params)
         tg_send(ADMIN_ID, msg)
-
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"status": "ok"}).encode())
+        self._ok()
 
     def do_POST(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+        content_type = self.headers.get("Content-Type", "")
 
         try:
-            content_type = self.headers.get("Content-Type", "")
             if "application/json" in content_type:
-                data = json.loads(body)
-                flat = {k: v for k, v in data.items()}
+                params = json.loads(body)
             else:
-                from urllib.parse import parse_qs
-                parsed_body = parse_qs(body.decode("utf-8"))
-                flat = {k: (v[0] if isinstance(v, list) else v) for k, v in parsed_body.items()}
+                params = flat_params(parse_qs(body.decode("utf-8")))
+        except Exception:
+            params = {}
 
-            msg = build_sms_message({k: [v] if not isinstance(v, list) else v for k, v in flat.items()})
-            tg_send(ADMIN_ID, msg)
-        except Exception as e:
-            print(f"Error: {e}")
+        print(f"[SMS POST] {params}")
+        msg = build_message(params)
+        tg_send(ADMIN_ID, msg)
+        self._ok()
 
+    def _ok(self):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
