@@ -1,7 +1,7 @@
 import os
 import threading
-import requests
 import asyncio
+import requests
 from flask import Flask, request, jsonify
 from telegram import Update, constants
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -13,122 +13,197 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "5002402843"))
 SMSX_BASE = "https://www.sms-x.org/stubs/handler_api.php"
 
 flask_app = Flask(__name__)
-
 bot_app = None
 main_loop = None
 
-
-def get_account_info():
-    try:
-        resp = requests.get(SMSX_BASE, params={
-            "api_key": API_KEY,
-            "action": "getBalance"
-        }, timeout=10)
-        text = resp.text.strip()
-        if text.startswith("ACCESS_BALANCE:"):
-            balance = text.split(":")[1]
-            return balance
-        return None
-    except Exception:
-        return None
+active_orders = {}
 
 
 def is_admin(update: Update) -> bool:
     return update.effective_user.id == ADMIN_ID
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        await update.message.reply_text("⛔ Access denied.")
-        return
-    await context.bot.send_chat_action(update.effective_chat.id, constants.ChatAction.TYPING)
-    balance = get_account_info()
-    domain = os.environ.get("REPLIT_DEV_DOMAIN", "your-repl.replit.dev")
-    webhook_url = f"https://{domain}/sms"
-    if balance is not None:
-        msg = (
-            f"👤 *Account Info*\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"🔑 API Key: `{API_KEY}`\n"
-            f"💰 Balance: *${balance}*\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"📡 Webhook URL:\n`{webhook_url}`\n\n"
-            f"Set this URL in sms-x.org settings."
-        )
-    else:
-        msg = (
-            f"👤 *Account Info*\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"🔑 API Key: `{API_KEY}`\n"
-            f"⚠️ Could not fetch balance.\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"📡 Webhook URL:\n`{webhook_url}`\n\n"
-            f"Set this URL in sms-x.org settings."
-        )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+def smsx(params: dict):
+    try:
+        resp = requests.get(SMSX_BASE, params={"api_key": API_KEY, **params}, timeout=10)
+        return resp.text.strip()
+    except Exception as e:
+        return f"ERROR:{e}"
 
 
-async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        await update.message.reply_text("⛔ Access denied.")
-        return
-    await context.bot.send_chat_action(update.effective_chat.id, constants.ChatAction.TYPING)
-    balance = get_account_info()
-    if balance is not None:
-        await update.message.reply_text(f"💰 Balance: *${balance}*", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("⚠️ Cannot fetch balance. Check your API key.")
+def get_balance():
+    text = smsx({"action": "getBalance"})
+    if text.startswith("ACCESS_BALANCE:"):
+        return text.split(":")[1]
+    return None
 
 
 def send_to_admin(msg: str):
     global bot_app, main_loop
-    if bot_app is None or main_loop is None:
-        print("Bot not ready yet")
+    if not bot_app or not main_loop:
         return
 
     async def _send():
-        await bot_app.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=msg,
-            parse_mode="Markdown"
-        )
+        await bot_app.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode="Markdown")
 
     future = asyncio.run_coroutine_threadsafe(_send(), main_loop)
     try:
         future.result(timeout=10)
     except Exception as e:
-        print(f"Error sending to Telegram: {e}")
+        print(f"Telegram send error: {e}")
+
+
+def poll_order(order_id: str, phone: str, service: str):
+    print(f"[POLL] Start polling order {order_id} | {phone} | {service}")
+    attempts = 0
+    max_attempts = 120
+
+    while attempts < max_attempts:
+        if order_id not in active_orders:
+            print(f"[POLL] Order {order_id} cancelled.")
+            return
+
+        result = smsx({"action": "getStatus", "id": order_id})
+        print(f"[POLL] Order {order_id}: {result}")
+
+        if result.startswith("STATUS_OK:"):
+            code = result.split(":", 1)[1]
+            msg = (
+                f"✅ *SMS Received!*\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"🛍 Service: *{service}*\n"
+                f"📞 Phone: `{phone}`\n"
+                f"🆔 Order ID: `{order_id}`\n"
+                f"🔐 Code: *{code}*\n"
+                f"━━━━━━━━━━━━━━━━"
+            )
+            send_to_admin(msg)
+            active_orders.pop(order_id, None)
+            return
+
+        elif result in ("STATUS_CANCEL", "STATUS_WAIT_RETRY"):
+            send_to_admin(f"❌ Order `{order_id}` cancelled or expired.")
+            active_orders.pop(order_id, None)
+            return
+
+        attempts += 1
+        threading.Event().wait(5)
+
+    send_to_admin(f"⏰ Order `{order_id}` timed out — no SMS received after 10 minutes.")
+    active_orders.pop(order_id, None)
+
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Access denied.")
+        return
+    balance = get_balance()
+    msg = (
+        f"👤 *SMS-X Bot*\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"💰 Balance: *${balance or 'N/A'}*\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"📌 *Commands:*\n"
+        f"`/buy SERVICE` — ទិញ number\n"
+        f"`/balance` — មើល balance\n"
+        f"`/cancel ORDER_ID` — លុប order\n"
+        f"`/orders` — មើល active orders\n\n"
+        f"*Service examples:* tg, wa, fb, ig, vk"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Access denied.")
+        return
+    balance = get_balance()
+    if balance:
+        await update.message.reply_text(f"💰 Balance: *${balance}*", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("⚠️ Cannot fetch balance.")
+
+
+async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Access denied.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("❗ Usage: `/buy SERVICE`\nExample: `/buy tg`", parse_mode="Markdown")
+        return
+
+    service = context.args[0].lower()
+    await update.message.reply_text(f"⏳ Getting number for *{service}*...", parse_mode="Markdown")
+
+    result = smsx({"action": "getNumber", "service": service})
+    print(f"[BUY] {result}")
+
+    if result.startswith("ACCESS_NUMBER:"):
+        parts = result.split(":")
+        order_id = parts[1]
+        phone = parts[2]
+
+        active_orders[order_id] = {"phone": phone, "service": service}
+
+        msg = (
+            f"📲 *Number Ready!*\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"🛍 Service: *{service}*\n"
+            f"📞 Phone: `{phone}`\n"
+            f"🆔 Order ID: `{order_id}`\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"⏳ Waiting for SMS... (10 min max)"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+
+        poll_thread = threading.Thread(target=poll_order, args=(order_id, phone, service), daemon=True)
+        poll_thread.start()
+
+    elif result == "NO_NUMBERS":
+        await update.message.reply_text(f"❌ No numbers available for *{service}*.", parse_mode="Markdown")
+    elif result == "NO_BALANCE":
+        await update.message.reply_text("❌ Insufficient balance.")
+    else:
+        await update.message.reply_text(f"❌ Error: `{result}`", parse_mode="Markdown")
+
+
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Access denied.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("❗ Usage: `/cancel ORDER_ID`", parse_mode="Markdown")
+        return
+
+    order_id = context.args[0]
+    if order_id in active_orders:
+        smsx({"action": "setStatus", "id": order_id, "status": 8})
+        active_orders.pop(order_id, None)
+        await update.message.reply_text(f"✅ Order `{order_id}` cancelled.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ Order `{order_id}` not found.", parse_mode="Markdown")
+
+
+async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Access denied.")
+        return
+
+    if not active_orders:
+        await update.message.reply_text("📭 No active orders.")
+        return
+
+    lines = ["📋 *Active Orders:*\n━━━━━━━━━━━━━━━━"]
+    for oid, info in active_orders.items():
+        lines.append(f"🆔 `{oid}` | 🛍 {info['service']} | 📞 `{info['phone']}`")
+    lines.append("━━━━━━━━━━━━━━━━")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 @flask_app.route("/sms", methods=["GET", "POST"])
 def sms_webhook():
-    if request.method == "GET":
-        data = request.args
-    else:
-        data = request.form if request.form else request.get_json(force=True, silent=True) or {}
-
-    phone = data.get("phone", data.get("number", ""))
-    code = data.get("code", data.get("sms", data.get("text", "")))
-    service = data.get("service", "")
-    order_id = data.get("id", data.get("order_id", ""))
-
-    msg = "📩 *SMS Received*\n━━━━━━━━━━━━━━━━\n"
-    if service:
-        msg += f"🛍️ Service: *{service}*\n"
-    if order_id:
-        msg += f"🆔 Order ID: `{order_id}`\n"
-    if phone:
-        msg += f"📞 Phone: `{phone}`\n"
-    if code:
-        msg += f"🔐 Code/SMS: *{code}*\n"
-    msg += "━━━━━━━━━━━━━━━━"
-
-    if not code and not phone:
-        msg += f"\n📦 Raw data: `{dict(data)}`"
-
-    print(f"Received SMS webhook: {dict(data)}")
-    send_to_admin(msg)
-
     return jsonify({"status": "ok"})
 
 
@@ -147,21 +222,19 @@ async def main():
     main_loop = asyncio.get_running_loop()
 
     bot_app = ApplicationBuilder().token(TOKEN).build()
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("balance", balance_cmd))
-    bot_app.add_handler(CommandHandler("account", balance_cmd))
+    bot_app.add_handler(CommandHandler("start", cmd_start))
+    bot_app.add_handler(CommandHandler("balance", cmd_balance))
+    bot_app.add_handler(CommandHandler("buy", cmd_buy))
+    bot_app.add_handler(CommandHandler("cancel", cmd_cancel))
+    bot_app.add_handler(CommandHandler("orders", cmd_orders))
 
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    domain = os.environ.get("REPLIT_DEV_DOMAIN", "")
-    print(f"Bot started. Admin ID: {ADMIN_ID}")
-    print(f"Webhook: https://{domain}/sms")
-
+    print(f"Bot started. Admin: {ADMIN_ID}")
     await bot_app.initialize()
     await bot_app.start()
     await bot_app.updater.start_polling()
-
     await asyncio.Event().wait()
 
 

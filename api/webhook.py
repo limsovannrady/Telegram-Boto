@@ -11,80 +11,134 @@ SMSX_BASE = "https://www.sms-x.org/stubs/handler_api.php"
 TG_API = f"https://api.telegram.org/bot{TOKEN}"
 
 
-def tg_send(chat_id, text, parse_mode="Markdown"):
-    requests.post(f"{TG_API}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": parse_mode
-    }, timeout=10)
+def tg_send(chat_id, text):
+    try:
+        requests.post(f"{TG_API}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown"
+        }, timeout=10)
+    except Exception as e:
+        print(f"Telegram error: {e}")
+
+
+def smsx(params: dict):
+    try:
+        resp = requests.get(SMSX_BASE, params={"api_key": API_KEY, **params}, timeout=10)
+        return resp.text.strip()
+    except Exception as e:
+        return f"ERROR:{e}"
 
 
 def get_balance():
-    try:
-        resp = requests.get(SMSX_BASE, params={
-            "api_key": API_KEY,
-            "action": "getBalance"
-        }, timeout=10)
-        text = resp.text.strip()
-        if text.startswith("ACCESS_BALANCE:"):
-            return text.split(":")[1]
-        return None
-    except Exception:
-        return None
+    text = smsx({"action": "getBalance"})
+    if text.startswith("ACCESS_BALANCE:"):
+        return text.split(":")[1]
+    return None
 
 
 def handle_command(message):
     chat_id = message["chat"]["id"]
     user_id = message.get("from", {}).get("id", 0)
-    text = message.get("text", "")
-    user = message.get("from", {})
-    name = user.get("first_name", "User")
+    text = message.get("text", "").strip()
+    parts = text.split()
+    cmd = parts[0].lower() if parts else ""
 
     if user_id != ADMIN_ID:
         tg_send(chat_id, "⛔ Access denied.")
         return
 
-    if text.startswith("/start"):
+    if cmd == "/start":
         balance = get_balance()
-        domain = os.environ.get("VERCEL_URL", "your-domain.vercel.app")
-        webhook_url = f"https://{domain}/api/sms"
-        if balance:
-            msg = (
-                f"👤 *Account Info*\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"🙋 Name: *{name}*\n"
-                f"🔑 API Key: `{API_KEY}`\n"
-                f"💰 Balance: *${balance}*\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"📡 SMS Webhook URL:\n`{webhook_url}`\n\n"
-                f"_Set this URL in sms-x.org settings._"
-            )
-        else:
-            msg = (
-                f"👤 *Account Info*\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"🙋 Name: *{name}*\n"
-                f"🔑 API Key: `{API_KEY}`\n"
-                f"⚠️ Could not fetch balance\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"📡 SMS Webhook URL:\n`{webhook_url}`\n\n"
-                f"_Set this URL in sms-x.org settings._"
-            )
+        msg = (
+            f"👤 *SMS-X Bot*\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"💰 Balance: *${balance or 'N/A'}*\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"📌 *Commands:*\n"
+            f"`/buy SERVICE` — ទិញ number\n"
+            f"`/check ORDER_ID` — check SMS\n"
+            f"`/cancel ORDER_ID` — លុប order\n"
+            f"`/balance` — មើល balance\n\n"
+            f"*Service examples:* tg, wa, fb, ig"
+        )
         tg_send(chat_id, msg)
 
-    elif text.startswith("/balance") or text.startswith("/account"):
+    elif cmd in ("/balance", "/account"):
         balance = get_balance()
         if balance:
             tg_send(chat_id, f"💰 Balance: *${balance}*")
         else:
-            tg_send(chat_id, "⚠️ Cannot fetch balance. Check your API key.")
+            tg_send(chat_id, "⚠️ Cannot fetch balance.")
+
+    elif cmd == "/buy":
+        if len(parts) < 2:
+            tg_send(chat_id, "❗ Usage: `/buy SERVICE`\nExample: `/buy tg`")
+            return
+
+        service = parts[1].lower()
+        tg_send(chat_id, f"⏳ Getting number for *{service}*...")
+
+        result = smsx({"action": "getNumber", "service": service})
+        print(f"[BUY] {result}")
+
+        if result.startswith("ACCESS_NUMBER:"):
+            r_parts = result.split(":")
+            order_id = r_parts[1]
+            phone = r_parts[2]
+            msg = (
+                f"📲 *Number Ready!*\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"🛍 Service: *{service}*\n"
+                f"📞 Phone: `{phone}`\n"
+                f"🆔 Order ID: `{order_id}`\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"⏳ Use `/check {order_id}` to get SMS code."
+            )
+            tg_send(chat_id, msg)
+        elif result == "NO_NUMBERS":
+            tg_send(chat_id, f"❌ No numbers available for *{service}*.")
+        elif result == "NO_BALANCE":
+            tg_send(chat_id, "❌ Insufficient balance.")
+        else:
+            tg_send(chat_id, f"❌ Error: `{result}`")
+
+    elif cmd == "/check":
+        if len(parts) < 2:
+            tg_send(chat_id, "❗ Usage: `/check ORDER_ID`")
+            return
+
+        order_id = parts[1]
+        result = smsx({"action": "getStatus", "id": order_id})
+        print(f"[CHECK] {order_id}: {result}")
+
+        if result.startswith("STATUS_OK:"):
+            code = result.split(":", 1)[1]
+            tg_send(chat_id, f"✅ *SMS Code:* `{code}`\n🆔 Order: `{order_id}`")
+        elif result == "STATUS_WAIT_CODE":
+            tg_send(chat_id, f"⏳ Still waiting for SMS...\nTry `/check {order_id}` again in a moment.")
+        elif result in ("STATUS_CANCEL", "STATUS_WAIT_RETRY"):
+            tg_send(chat_id, f"❌ Order `{order_id}` was cancelled.")
+        else:
+            tg_send(chat_id, f"📋 Status: `{result}`")
+
+    elif cmd == "/cancel":
+        if len(parts) < 2:
+            tg_send(chat_id, "❗ Usage: `/cancel ORDER_ID`")
+            return
+
+        order_id = parts[1]
+        smsx({"action": "setStatus", "id": order_id, "status": 8})
+        tg_send(chat_id, f"✅ Order `{order_id}` cancelled.")
+
+    else:
+        tg_send(chat_id, "❓ Unknown command. Type /start for help.")
 
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
-
         try:
             update = json.loads(body)
             if "message" in update:
