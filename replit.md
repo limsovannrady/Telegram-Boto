@@ -2,43 +2,54 @@
 
 ## Overview
 
-A simple Telegram bot that connects to **sms-x.org** API to:
-- Display account balance/info via commands
-- Receive SMS webhook notifications from sms-x.org and forward them to the admin
+A Telegram bot that connects to **sms-x.org** API to:
+- Display account balance and info via commands
+- Receive SMS notifications via webhook and forward them to admin
 
 ## Stack
 
-- **Language**: Python 3.11
-- **Bot library**: python-telegram-bot
-- **Web server**: Flask (receives SMS webhooks)
+- **Language**: Python 3.11 / 3.12
+- **Local dev**: python-telegram-bot (polling mode) + Flask
+- **Production (Vercel)**: Serverless functions via `api/` directory
 - **HTTP client**: requests
 
-## Configuration
+## Project Structure
 
-| Variable | Description |
+```
+/
+├── api/
+│   ├── webhook.py    ← Telegram webhook handler (Vercel serverless)
+│   └── sms.py        ← SMS-X webhook handler (Vercel serverless)
+├── bot.py            ← Local development bot (polling + Flask)
+├── vercel.json       ← Vercel deployment config
+├── requirements.txt  ← Python deps for Vercel
+├── pyproject.toml    ← Python deps for local dev
+└── DEPLOY.md         ← Full deployment guide
+```
+
+## Environment Variables
+
+| Name | Description |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | Secret — Telegram bot token |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token (secret) |
 | `SMSX_API_KEY` | sms-x.org API key |
-| `ADMIN_ID` | Telegram user ID to receive SMS notifications |
+| `ADMIN_ID` | Telegram user ID to receive SMS |
 
-## Commands
+## Bot Commands
 
 | Command | Description |
 |---|---|
-| `/start` | Show account info, balance, and webhook URL |
-| `/account` | Show account balance |
-| `/balance` | Show account balance |
+| `/start` | Show account info, balance, webhook URL |
+| `/balance` | Show current balance |
+| `/account` | Same as /balance |
 
-## Webhook Setup
+## Endpoints (Vercel)
 
-The bot runs a Flask HTTP server. The webhook URL is:
-```
-https://<REPLIT_DEV_DOMAIN>/sms
-```
+| Path | Method | Purpose |
+|---|---|---|
+| `/api/webhook` | POST | Receive Telegram updates |
+| `/api/sms` | GET/POST | Receive SMS from sms-x.org |
 
-Set this URL in your sms-x.org account settings so incoming SMS messages are forwarded to your Telegram admin account.
+## Deploy to Vercel
 
-## Files
-
-- `bot.py` — Main bot + Flask webhook server
-- `pyproject.toml` — Python dependencies
+See `DEPLOY.md` for full instructions.
