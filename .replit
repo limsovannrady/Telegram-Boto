@@ -47,3 +47,10 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+SMSX_API_KEY = "3dd71200967c1afb2a82bf21ee9c138c"
+ADMIN_ID = "5002402843"
+TELEGRAM_BOT_TOKEN = "8520940651:AAHtpngU9nso_cyPadpotFAVu1pDxtx82kw"
