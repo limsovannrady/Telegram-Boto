@@ -53,43 +53,42 @@ def send_to_admin(msg: str):
         print(f"Telegram send error: {e}")
 
 
-def poll_order(order_id: str, phone: str, service: str):
-    print(f"[POLL] Start polling order {order_id} | {phone} | {service}")
+def poll_order(order_id: str, label: str):
+    print(f"[POLL] Start polling order {order_id}")
     attempts = 0
-    max_attempts = 120
+    max_attempts = 120  # 10 minutes (5s x 120)
 
     while attempts < max_attempts:
         if order_id not in active_orders:
-            print(f"[POLL] Order {order_id} cancelled.")
+            print(f"[POLL] Order {order_id} stopped.")
             return
 
         result = smsx({"action": "getStatus", "id": order_id})
-        print(f"[POLL] Order {order_id}: {result}")
+        print(f"[POLL] {order_id}: {result}")
 
         if result.startswith("STATUS_OK:"):
             code = result.split(":", 1)[1]
             msg = (
                 f"✅ *SMS Received!*\n"
                 f"━━━━━━━━━━━━━━━━\n"
-                f"🛍 Service: *{service}*\n"
-                f"📞 Phone: `{phone}`\n"
-                f"🆔 Order ID: `{order_id}`\n"
-                f"🔐 Code: *{code}*\n"
+                f"📝 Order: `{order_id}`"
+                + (f"\n🏷 Label: {label}" if label else "") +
+                f"\n🔐 *Code: {code}*\n"
                 f"━━━━━━━━━━━━━━━━"
             )
             send_to_admin(msg)
             active_orders.pop(order_id, None)
             return
 
-        elif result in ("STATUS_CANCEL", "STATUS_WAIT_RETRY"):
-            send_to_admin(f"❌ Order `{order_id}` cancelled or expired.")
+        elif result in ("STATUS_CANCEL", "NO_ACTIVATION"):
+            send_to_admin(f"❌ Order `{order_id}` — cancelled or not found.")
             active_orders.pop(order_id, None)
             return
 
         attempts += 1
         threading.Event().wait(5)
 
-    send_to_admin(f"⏰ Order `{order_id}` timed out — no SMS received after 10 minutes.")
+    send_to_admin(f"⏰ Order `{order_id}` — timeout, no SMS after 10 minutes.")
     active_orders.pop(order_id, None)
 
 
@@ -103,12 +102,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━\n"
         f"💰 Balance: *${balance or 'N/A'}*\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"📌 *Commands:*\n"
-        f"`/buy SERVICE` — ទិញ number\n"
-        f"`/balance` — មើល balance\n"
-        f"`/cancel ORDER_ID` — លុប order\n"
-        f"`/orders` — មើល active orders\n\n"
-        f"*Service examples:* tg, wa, fb, ig, vk"
+        f"📌 *របៀបប្រើ:*\n"
+        f"1️⃣ ទិញ number នៅ sms-x.org\n"
+        f"2️⃣ Copy Order ID\n"
+        f"3️⃣ ផ្ញើ `/watch ORDER_ID` មក bot\n"
+        f"4️⃣ Bot poll ស្វ័យប្រវត្តិ — SMS ចូល ផ្ញើ Telegram ភ្លាម!\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"📋 *Commands:*\n"
+        f"`/watch ORDER_ID` — start poll\n"
+        f"`/check ORDER_ID` — check ម្ដងៗ\n"
+        f"`/stop ORDER_ID` — stop poll\n"
+        f"`/orders` — active orders\n"
+        f"`/balance` — មើល balance"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -124,66 +129,92 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Cannot fetch balance.")
 
 
-async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         await update.message.reply_text("⛔ Access denied.")
         return
 
     if not context.args:
-        await update.message.reply_text("❗ Usage: `/buy SERVICE`\nExample: `/buy tg`", parse_mode="Markdown")
-        return
-
-    service = context.args[0].lower()
-    await update.message.reply_text(f"⏳ Getting number for *{service}*...", parse_mode="Markdown")
-
-    result = smsx({"action": "getNumber", "service": service})
-    print(f"[BUY] {result}")
-
-    if result.startswith("ACCESS_NUMBER:"):
-        parts = result.split(":")
-        order_id = parts[1]
-        phone = parts[2]
-
-        active_orders[order_id] = {"phone": phone, "service": service}
-
-        msg = (
-            f"📲 *Number Ready!*\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"🛍 Service: *{service}*\n"
-            f"📞 Phone: `{phone}`\n"
-            f"🆔 Order ID: `{order_id}`\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"⏳ Waiting for SMS... (10 min max)"
+        await update.message.reply_text(
+            "❗ Usage: `/watch ORDER_ID`\nExample: `/watch 123456789`",
+            parse_mode="Markdown"
         )
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
 
-        poll_thread = threading.Thread(target=poll_order, args=(order_id, phone, service), daemon=True)
-        poll_thread.start()
+    order_id = context.args[0]
+    label = " ".join(context.args[1:]) if len(context.args) > 1 else ""
 
-    elif result == "NO_NUMBERS":
-        await update.message.reply_text(f"❌ No numbers available for *{service}*.", parse_mode="Markdown")
-    elif result == "NO_BALANCE":
-        await update.message.reply_text("❌ Insufficient balance.")
-    else:
-        await update.message.reply_text(f"❌ Error: `{result}`", parse_mode="Markdown")
+    if order_id in active_orders:
+        await update.message.reply_text(f"⚠️ Order `{order_id}` is already being watched.", parse_mode="Markdown")
+        return
+
+    result = smsx({"action": "getStatus", "id": order_id})
+    if result == "NO_ACTIVATION":
+        await update.message.reply_text(f"❌ Order `{order_id}` not found on sms-x.org.", parse_mode="Markdown")
+        return
+
+    if result.startswith("STATUS_OK:"):
+        code = result.split(":", 1)[1]
+        await update.message.reply_text(
+            f"✅ *SMS already received!*\n🔐 Code: *{code}*",
+            parse_mode="Markdown"
+        )
+        return
+
+    active_orders[order_id] = {"label": label}
+    msg = (
+        f"👁 *Watching Order* `{order_id}`\n"
+        + (f"🏷 Label: {label}\n" if label else "") +
+        f"⏳ Polling every 5s — max 10 minutes.\n"
+        f"SMS ចូលដល់ ខ្ញុំផ្ញើភ្លាម!"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+    poll_thread = threading.Thread(target=poll_order, args=(order_id, label), daemon=True)
+    poll_thread.start()
 
 
-async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         await update.message.reply_text("⛔ Access denied.")
         return
 
     if not context.args:
-        await update.message.reply_text("❗ Usage: `/cancel ORDER_ID`", parse_mode="Markdown")
+        await update.message.reply_text("❗ Usage: `/check ORDER_ID`", parse_mode="Markdown")
+        return
+
+    order_id = context.args[0]
+    result = smsx({"action": "getStatus", "id": order_id})
+
+    if result.startswith("STATUS_OK:"):
+        code = result.split(":", 1)[1]
+        await update.message.reply_text(
+            f"✅ *SMS Code:* `{code}`\n🆔 Order: `{order_id}`",
+            parse_mode="Markdown"
+        )
+    elif result == "STATUS_WAIT_CODE":
+        await update.message.reply_text(f"⏳ Waiting for SMS... Order `{order_id}`", parse_mode="Markdown")
+    elif result == "NO_ACTIVATION":
+        await update.message.reply_text(f"❌ Order `{order_id}` not found.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"📋 Status: `{result}`", parse_mode="Markdown")
+
+
+async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Access denied.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("❗ Usage: `/stop ORDER_ID`", parse_mode="Markdown")
         return
 
     order_id = context.args[0]
     if order_id in active_orders:
-        smsx({"action": "setStatus", "id": order_id, "status": 8})
-        active_orders.pop(order_id, None)
-        await update.message.reply_text(f"✅ Order `{order_id}` cancelled.", parse_mode="Markdown")
+        active_orders.pop(order_id)
+        await update.message.reply_text(f"🛑 Stopped watching `{order_id}`.", parse_mode="Markdown")
     else:
-        await update.message.reply_text(f"❌ Order `{order_id}` not found.", parse_mode="Markdown")
+        await update.message.reply_text(f"❌ Order `{order_id}` not in watch list.", parse_mode="Markdown")
 
 
 async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -192,19 +223,15 @@ async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not active_orders:
-        await update.message.reply_text("📭 No active orders.")
+        await update.message.reply_text("📭 No active orders being watched.")
         return
 
-    lines = ["📋 *Active Orders:*\n━━━━━━━━━━━━━━━━"]
+    lines = ["📋 *Watching:*\n━━━━━━━━━━━━━━━━"]
     for oid, info in active_orders.items():
-        lines.append(f"🆔 `{oid}` | 🛍 {info['service']} | 📞 `{info['phone']}`")
+        label = info.get("label", "")
+        lines.append(f"🆔 `{oid}`" + (f" — {label}" if label else ""))
     lines.append("━━━━━━━━━━━━━━━━")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-@flask_app.route("/sms", methods=["GET", "POST"])
-def sms_webhook():
-    return jsonify({"status": "ok"})
 
 
 @flask_app.route("/health")
@@ -224,8 +251,9 @@ async def main():
     bot_app = ApplicationBuilder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", cmd_start))
     bot_app.add_handler(CommandHandler("balance", cmd_balance))
-    bot_app.add_handler(CommandHandler("buy", cmd_buy))
-    bot_app.add_handler(CommandHandler("cancel", cmd_cancel))
+    bot_app.add_handler(CommandHandler("watch", cmd_watch))
+    bot_app.add_handler(CommandHandler("check", cmd_check))
+    bot_app.add_handler(CommandHandler("stop", cmd_stop))
     bot_app.add_handler(CommandHandler("orders", cmd_orders))
 
     flask_thread = threading.Thread(target=run_flask, daemon=True)

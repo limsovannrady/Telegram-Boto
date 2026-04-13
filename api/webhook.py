@@ -40,9 +40,9 @@ def get_balance():
 def handle_command(message):
     chat_id = message["chat"]["id"]
     user_id = message.get("from", {}).get("id", 0)
-    text = message.get("text", "").strip()
-    parts = text.split()
-    cmd = parts[0].lower() if parts else ""
+    raw = message.get("text", "").strip()
+    parts = raw.split()
+    cmd = parts[0].lower().split("@")[0] if parts else ""
 
     if user_id != ADMIN_ID:
         tg_send(chat_id, "⛔ Access denied.")
@@ -55,53 +55,19 @@ def handle_command(message):
             f"━━━━━━━━━━━━━━━━\n"
             f"💰 Balance: *${balance or 'N/A'}*\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"📌 *Commands:*\n"
-            f"`/buy SERVICE` — ទិញ number\n"
-            f"`/check ORDER_ID` — check SMS\n"
-            f"`/cancel ORDER_ID` — លុប order\n"
-            f"`/balance` — មើល balance\n\n"
-            f"*Service examples:* tg, wa, fb, ig"
+            f"📌 *របៀបប្រើ:*\n"
+            f"1️⃣ ទិញ number នៅ sms-x.org\n"
+            f"2️⃣ Copy Order ID\n"
+            f"3️⃣ ផ្ញើ `/check ORDER_ID` មក bot\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"`/check ORDER_ID` — check SMS code\n"
+            f"`/balance` — មើល balance"
         )
         tg_send(chat_id, msg)
 
     elif cmd in ("/balance", "/account"):
         balance = get_balance()
-        if balance:
-            tg_send(chat_id, f"💰 Balance: *${balance}*")
-        else:
-            tg_send(chat_id, "⚠️ Cannot fetch balance.")
-
-    elif cmd == "/buy":
-        if len(parts) < 2:
-            tg_send(chat_id, "❗ Usage: `/buy SERVICE`\nExample: `/buy tg`")
-            return
-
-        service = parts[1].lower()
-        tg_send(chat_id, f"⏳ Getting number for *{service}*...")
-
-        result = smsx({"action": "getNumber", "service": service})
-        print(f"[BUY] {result}")
-
-        if result.startswith("ACCESS_NUMBER:"):
-            r_parts = result.split(":")
-            order_id = r_parts[1]
-            phone = r_parts[2]
-            msg = (
-                f"📲 *Number Ready!*\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"🛍 Service: *{service}*\n"
-                f"📞 Phone: `{phone}`\n"
-                f"🆔 Order ID: `{order_id}`\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"⏳ Use `/check {order_id}` to get SMS code."
-            )
-            tg_send(chat_id, msg)
-        elif result == "NO_NUMBERS":
-            tg_send(chat_id, f"❌ No numbers available for *{service}*.")
-        elif result == "NO_BALANCE":
-            tg_send(chat_id, "❌ Insufficient balance.")
-        else:
-            tg_send(chat_id, f"❌ Error: `{result}`")
+        tg_send(chat_id, f"💰 Balance: *${balance}*" if balance else "⚠️ Cannot fetch balance.")
 
     elif cmd == "/check":
         if len(parts) < 2:
@@ -110,29 +76,19 @@ def handle_command(message):
 
         order_id = parts[1]
         result = smsx({"action": "getStatus", "id": order_id})
-        print(f"[CHECK] {order_id}: {result}")
 
         if result.startswith("STATUS_OK:"):
             code = result.split(":", 1)[1]
             tg_send(chat_id, f"✅ *SMS Code:* `{code}`\n🆔 Order: `{order_id}`")
         elif result == "STATUS_WAIT_CODE":
-            tg_send(chat_id, f"⏳ Still waiting for SMS...\nTry `/check {order_id}` again in a moment.")
-        elif result in ("STATUS_CANCEL", "STATUS_WAIT_RETRY"):
-            tg_send(chat_id, f"❌ Order `{order_id}` was cancelled.")
+            tg_send(chat_id, f"⏳ Still waiting for SMS on order `{order_id}`.\nTry again in a moment.")
+        elif result == "NO_ACTIVATION":
+            tg_send(chat_id, f"❌ Order `{order_id}` not found.")
         else:
             tg_send(chat_id, f"📋 Status: `{result}`")
 
-    elif cmd == "/cancel":
-        if len(parts) < 2:
-            tg_send(chat_id, "❗ Usage: `/cancel ORDER_ID`")
-            return
-
-        order_id = parts[1]
-        smsx({"action": "setStatus", "id": order_id, "status": 8})
-        tg_send(chat_id, f"✅ Order `{order_id}` cancelled.")
-
     else:
-        tg_send(chat_id, "❓ Unknown command. Type /start for help.")
+        tg_send(chat_id, "❓ Unknown command. Use /start for help.")
 
 
 class handler(BaseHTTPRequestHandler):
