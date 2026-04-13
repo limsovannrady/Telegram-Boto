@@ -15,6 +15,7 @@ SMSX_BASE = "https://www.sms-x.org/stubs/handler_api.php"
 flask_app = Flask(__name__)
 
 bot_app = None
+main_loop = None
 
 
 def get_account_info():
@@ -45,19 +46,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Balance: *${balance}*\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"📡 Webhook URL:\n`{webhook_url}`\n\n"
-            f"_Set this URL in your sms-x.org settings to receive SMS here._"
+            f"_Set this URL in your sms\\-x\\.org settings to receive SMS here\\._"
         )
     else:
         msg = (
             f"👤 *Account Info*\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"🔑 API Key: `{API_KEY}`\n"
-            f"⚠️ Could not fetch balance.\n"
+            f"⚠️ Could not fetch balance\\.\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"📡 Webhook URL:\n`{webhook_url}`\n\n"
-            f"_Set this URL in your sms-x.org settings to receive SMS here._"
+            f"_Set this URL in your sms\\-x\\.org settings to receive SMS here\\._"
         )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, parse_mode="MarkdownV2")
 
 
 async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -67,6 +68,26 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"💰 Balance: *${balance}*", parse_mode="Markdown")
     else:
         await update.message.reply_text("⚠️ Cannot fetch balance. Check your API key.")
+
+
+def send_to_admin(msg: str):
+    global bot_app, main_loop
+    if bot_app is None or main_loop is None:
+        print("Bot not ready yet")
+        return
+
+    async def _send():
+        await bot_app.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=msg,
+            parse_mode="Markdown"
+        )
+
+    future = asyncio.run_coroutine_threadsafe(_send(), main_loop)
+    try:
+        future.result(timeout=10)
+    except Exception as e:
+        print(f"Error sending to Telegram: {e}")
 
 
 @flask_app.route("/sms", methods=["GET", "POST"])
@@ -81,10 +102,7 @@ def sms_webhook():
     service = data.get("service", "")
     order_id = data.get("id", data.get("order_id", ""))
 
-    msg = (
-        f"📩 *SMS Received*\n"
-        f"━━━━━━━━━━━━━━━━\n"
-    )
+    msg = "📩 *SMS Received*\n━━━━━━━━━━━━━━━━\n"
     if service:
         msg += f"🛍️ Service: *{service}*\n"
     if order_id:
@@ -93,25 +111,13 @@ def sms_webhook():
         msg += f"📞 Phone: `{phone}`\n"
     if code:
         msg += f"🔐 Code/SMS: *{code}*\n"
-    msg += f"━━━━━━━━━━━━━━━━"
+    msg += "━━━━━━━━━━━━━━━━"
 
     if not code and not phone:
         msg += f"\n📦 Raw data: `{dict(data)}`"
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(
-            bot_app.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=msg,
-                parse_mode="Markdown"
-            )
-        )
-    except Exception as e:
-        print(f"Error sending to Telegram: {e}")
-    finally:
-        loop.close()
+    print(f"Received SMS webhook: {dict(data)}")
+    send_to_admin(msg)
 
     return jsonify({"status": "ok"})
 
@@ -126,8 +132,10 @@ def run_flask():
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 
-def main():
-    global bot_app
+async def main():
+    global bot_app, main_loop
+    main_loop = asyncio.get_running_loop()
+
     bot_app = ApplicationBuilder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("balance", balance_cmd))
@@ -136,10 +144,16 @@ def main():
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
+    domain = os.environ.get("REPLIT_DEV_DOMAIN", "")
     print(f"Bot started. Admin ID: {ADMIN_ID}")
-    print(f"Webhook: https://{os.environ.get('REPLIT_DEV_DOMAIN', '')}/sms")
-    bot_app.run_polling()
+    print(f"Webhook: https://{domain}/sms")
+
+    await bot_app.initialize()
+    await bot_app.start()
+    await bot_app.updater.start_polling()
+
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
